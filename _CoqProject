@@ -1,0 +1,2 @@
+-R _build/default/theories Fampoly
+-I _build/default/src

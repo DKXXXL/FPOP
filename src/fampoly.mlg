@@ -1,0 +1,432 @@
+DECLARE PLUGIN "fampoly_plugin"
+
+{
+
+(* open Ltac_plugin *)
+(* open Familytype *)
+open Fenv
+open Finh
+open Ftheorem
+(* open Familypoly  *)
+open Famprogram
+
+open Utils
+open CoqIndSigUtil
+
+(* This package contains parsing rule for inductive_definitions *)
+open Pvernac.Vernac_
+open Pcoq.Constr
+open Pcoq.Prim
+
+(* This one is necessary, to avoid message about missing wit_string *)
+open Stdarg
+open Ltac_plugin.Tacarg
+open Ltac_plugin
+
+(* We need to manipulate Coq's Parser a bit
+The following is copy and paste from Mtac, 
+  and I am not really sure what each part means
+
+My understanding is 
+  wit_mutind_defs and mutind_defs are both there
+    to make GRAMMAR support a new kind of parsing rule
+    and make mutind_defs(inddefs) valid in 
+*)
+
+
+
+
+let wit_mutind_defs : (coq_ind_sig, Util.Empty.t, Util.Empty.t) Genarg.genarg_type =
+  Genarg.create_arg "coq_ind_sig"
+
+let wit_list1ident : (Names.Id.t list, Util.Empty.t, Util.Empty.t) Genarg.genarg_type =
+  Genarg.create_arg "list1ident_ty"
+
+let wit_reference_ip : (Libnames.qualid, Util.Empty.t, Util.Empty.t) Genarg.genarg_type =
+  Genarg.create_arg "reference_ip"
+
+let wit_llconstr_ip : (Constrexpr.constr_expr, Genintern.glob_constr_and_expr, EConstr.t) Genarg.genarg_type =
+  Genarg.create_arg "llconstr_ip"
+
+(* type thmbinderprop_info = (name * Constrexpr.constr_expr) list
+
+let wit_thmbinders :  (thmbinderprop_info, Util.Empty.t, Util.Empty.t) Genarg.genarg_type =
+  Genarg.create_arg "thmbinders" *)
+
+
+let mutind_defs : coq_ind_sig Pcoq.Entry.t =
+  Pcoq.create_generic_entry2 "mutind_defs" (Genarg.rawwit wit_mutind_defs)
+
+let list1ident : Names.Id.t list Pcoq.Entry.t =
+  Pcoq.create_generic_entry2 "list1ident" (Genarg.rawwit wit_list1ident)
+
+let reference_ip : Libnames.qualid Pcoq.Entry.t = 
+  Pcoq.create_generic_entry2 "reference_ip" (Genarg.rawwit wit_reference_ip)
+
+
+(* llconstr_ip is basically lconstr but it will try to add proper family prefix 
+    called llconstr_infer_prefix   
+*)
+let llconstr_ip : Constrexpr.constr_expr Pcoq.Entry.t =
+  Pcoq.create_generic_entry2 "llconstr_ip" (Genarg.rawwit wit_llconstr_ip)
+
+(* let thmbinders : thmbinderprop_info Pcoq.Entry.t =
+  Pcoq.create_generic_entry2 "thmbinders" (Genarg.rawwit wit_thmbinders) *)
+
+let _in_proof_mode _ = Vernacextend.(VtStartProof (Doesn'tGuaranteeOpacity,[]))
+
+}
+
+GRAMMAR EXTEND Gram
+GLOBAL: mutind_defs llconstr_ip (*thmbinders*) gallina_ext list1ident reference_ip;
+  list1ident : 
+    [[ listid = LIST1 ident -> { listid }]];
+  mutind_defs :
+    [[ indl = LIST1 inductive_definition SEP "with" -> { indl } ]];
+  llconstr_ip : 
+    [[ c = lconstr -> { attach_self_prefix c } ]];
+  reference_ip :
+    [[ r = reference -> { attach_self_prefix_qualid r } ]];
+  (* thmbinders : 
+    [[ id = ident;  ":"; c = llconstr_ip -> { (id, c)::[] } ]]; *)
+  gallina_ext : TOP
+    [[  ]];
+END
+
+(* llconstr_ip is those constructor that has self__ auto prefixxed *)
+VERNAC COMMAND EXTEND FamilyPolyEntry CLASSIFIED AS SIDEFF
+
+| [ "MetaData" ident(i)  ] -> {
+    assert_in_scope OpenedFamily;
+    let modname, params = open_meta_data_section i in 
+    open_new_module (modname.v) params; 
+    push_scope (OpenedMetadata, i, close_meta_data_section)
+  }
+
+| [ "Field" ident(fname) ":" llconstr_ip(eT) ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    (* this is the gathering of FieldClaim Stuff *)
+    let modname, params = open_claim_goal_info_prepare tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+| [ "FLemma" ident(fname) ":" llconstr_ip(eT) ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    (* this is the gathering of FieldClaim Stuff *)
+    let modname, params = open_claim_goal_info_prepare tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+| [ "Field" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e)  ] -> { 
+  assert_in_scope OpenedFamily;
+  add_new_field fname ~eT:(Some eT) e }
+| [ "FDefinition" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e)  ] -> { 
+  assert_in_scope OpenedFamily;
+  add_new_field fname ~eT:(Some eT) e }
+
+| [ "Overridable" "Field" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e)  ] -> {   
+  assert_in_scope OpenedFamily;
+  add_overridable_field fname ~eT:(Some eT) e }
+| [ "Overridable" "FDefinition" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e)  ] -> {   
+  assert_in_scope OpenedFamily;
+  add_overridable_field fname ~eT:(Some eT) e }
+
+| [ "Overridable" "pins" "{" list1ident(def_depend) "}" "Field" 
+    ident(fname) ":" llconstr_ip(eT)  ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    (* this is the gathering of Overridable FieldClaim Stuff *)
+    let ov_dependencies = Some (fst @@ overridable_names_analyze_to_paths def_depend) in 
+    let modname, params = open_claim_goal_info_prepare ~ov_dependencies tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+
+| [ "Overridable" "pins" "{" list1ident(def_depend) "}" "FLemma" 
+    ident(fname) ":" llconstr_ip(eT)  ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    (* this is the gathering of Overridable FieldClaim Stuff *)
+    let ov_dependencies = Some (fst @@ overridable_names_analyze_to_paths def_depend) in 
+    let modname, params = open_claim_goal_info_prepare ~ov_dependencies tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+
+| [ "Overridable" "pins" "{" list1ident(def_depend) "}" "Field" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e)  ] -> { 
+  assert_in_scope OpenedFamily;
+  add_overridable_field fname ~eT:(Some eT) ~def_depend e }
+
+| [ "Overridable" "pins" "{" list1ident(def_depend) "}" "FDefinition" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e)  ] -> { 
+  assert_in_scope OpenedFamily;
+  add_overridable_field fname ~eT:(Some eT) ~def_depend e }
+
+| [ "FInduction" ident(fname) "about" reference_ip(indref) "motive"  llconstr_ip(motive) ] ->
+  { 
+    assert_in_scope OpenedFamily;
+    begin match infer_fname_new_or_extend fname with
+    | `New -> open_ftheorem_info_prepare fname motive indref 
+    | `Extend -> open_extend_ftheorem_info_prepare fname
+    end;
+    push_scope (FInduction, fname, close_ftheorem);
+    let modname, params = prepare_proving_ftheorem1 () in
+    open_new_module (modname.v) params; 
+    prepare_proving_ftheorem2 ()
+  } 
+
+| [ "FInduction" ident(fname)] ->
+  { 
+    assert_in_scope OpenedFamily;
+    assert_cerror_forced ~einfo:"Can only omit motive when extending" 
+    (fun _ -> infer_fname_new_or_extend fname = `Extend);
+    open_extend_ftheorem_info_prepare fname;
+    push_scope (FInduction, fname, close_ftheorem);
+    let modname, params = prepare_proving_ftheorem1 () in
+    open_new_module (modname.v) params; 
+    prepare_proving_ftheorem2 ()
+  } 
+
+(* | [ "Closing" "Fact" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e) ] -> { asserting_closing_fact fname eT (RawTerm e) }   *)
+(* Don't support proof-relevant Closing Fact from now on *)
+| [ "Closing" "Fact" ident(fname) ":" llconstr_ip(eT) "by" "{" tactic(script) "}" ] -> 
+  {   assert_in_scope OpenedFamily;
+      asserting_closing_fact fname eT (ProofScript {script; starting_plain = false; opacity = Vernacexpr.Opaque}) }  
+| [ "Closing" "Fact" ident(fname) ":" llconstr_ip(eT) "by" "plain" "{" tactic(script) "}" ] -> 
+  {   assert_in_scope OpenedFamily;
+      asserting_closing_fact fname eT (ProofScript {script; starting_plain = true; opacity = Vernacexpr.Opaque}) }  
+| [ "Closing" "Fact" ident(fname) ":" llconstr_ip(eT) "by" "transparent" "{" tactic(script) "}" ] -> 
+  {   assert_in_scope OpenedFamily;
+      asserting_closing_fact fname eT (ProofScript {script; starting_plain = false; opacity = Vernacexpr.Transparent}) }  
+| [ "Closing" "Fact" ident(fname) ":" llconstr_ip(eT) "by" "plain" "transparent" "{" tactic(script) "}" ] -> 
+  {   assert_in_scope OpenedFamily;
+      asserting_closing_fact fname eT (ProofScript {script; starting_plain = true; opacity = Vernacexpr.Transparent}) }  
+(* my goodness this is so stupid *)
+| [ "Print" "Family" "Type" ident(fname) ] -> { Utils.msg_notice (pr_familytype_inctx fname) }
+| [ "Print" "Family" ident(fname) ]        -> { Utils.msg_notice (pr_familyterm_inctx fname) }
+(* deprecate the following *)
+(* | [ "SealFamily" ] -> { inherits_all_remained(); close_current_inh_judgement ~is_sealing:true () } *)
+  (* Turn off SealFamily feature *)
+| [ "FRecursor" ident(fname) 
+               "about" reference_ip(indref)
+               "motive" llconstr_ip(motive)
+               "using" reference_ip(rec_mod) 
+               "by" ident(postfix)  ] -> 
+  {   assert_in_scope OpenedFamily;
+      add_recursor fname rec_mod motive indref postfix
+      }
+| [ "FRecursor" ident(fname) 
+               "about" reference_ip(indref)
+               "motive" llconstr_ip(motive)
+               "using" reference_ip(rec_mod) 
+               "by" ident(postfix) "WithRec2D"  ] -> 
+  {   assert_in_scope OpenedFamily;
+      add_recursor_and_rec2d fname rec_mod motive indref postfix
+      }
+(* | [ "TestProof2" ident(fname) ":" llconstr_ip(eT) "by" "{" tactic(t) "}" ] -> { test_proof2 fname eT t }   *)
+
+| [ "FRecursion" ident(fname) 
+               "about" reference_ip(indref)
+               "motive" llconstr_ip(motive)
+               "by" ident(postfix)  ] -> 
+  { 
+    assert_in_scope OpenedFamily;
+    push_scope (FRecursion, fname, FRecursionSugar.close_frecursion_block);
+    match infer_fname_new_or_extend fname with 
+    | `New -> FRecursionSugar.start_frecursion_block fname motive indref postfix
+    | `Extend -> FRecursionSugar.extend_frecursion_block fname
+  }
+| [ "FRecursion" ident(fname)   ] -> 
+  { 
+    assert_in_scope OpenedFamily;
+    push_scope (FRecursion, fname, FRecursionSugar.close_frecursion_block);
+    match infer_fname_new_or_extend fname with 
+    | `New -> cerror ~einfo:("Only Extension can omit parameters!"^__LOC__) ()
+    | `Extend -> FRecursionSugar.extend_frecursion_block fname
+  }
+
+| [ "Case" ident(fname) ":=" constr(tm) ] -> 
+  { 
+    (* we need to find path using special rule to achieve parallel Case by default *)
+    (* thus lconstr instead of llconstr_ip here *)
+    assert_in_scope FRecursion;
+    let current_ctx = currentinh_output_ctx () in 
+    let current_ctx_wo_top = 
+      match current_ctx with 
+      | Familytype.FamCtx [] -> cerror ~einfo:("Not Supposed to happen"^__LOC__) ()
+      | Familytype.FamCtx ((fname , (fhname, _)) :: rest) -> Familytype.FamCtx ((fname , (fhname, [])) :: rest)
+    in 
+    let tm = attach_self_prefix ~targetctx:(Some current_ctx_wo_top) tm in 
+    FRecursionSugar.add_frecursion_handler fname tm
+   }
+
+| [ "FScheme" ident(fname) "PRecT"  "about" reference_ip(indref) ] -> { 
+  assert_in_scope OpenedFamily; 
+  add_prec_and_rec2d fname indref }
+(* Following is pretty useless, we discard it *)
+(* | [ "FScheme" ident(fname) "Rec2D" "about" reference_ip(recursorref) ] -> {   
+  assert_in_scope OpenedFamily; 
+  add_rec2d ~fname ~recursorref } *)
+(* Following is now automatic, we discard it *)
+(* | [ "FScheme" "Rec2D" "about"  reference_ip(recursorref) ] -> {   
+  assert_in_scope OpenedFamily; 
+  add_rec2d ~recursorref ()
+} *)
+
+| [ "TestOpenModule" ident(fname) ] -> {(open_new_module fname [])}
+| [ "TestCloseModule" ident(fname) ] -> {close_defined_module fname}
+
+
+(* Change to generic scope ending *)
+| [ "FEnd" ident(scope_name) ] -> {   pop_scope scope_name () }
+(* | [ "EndMetaData" ] -> { close_meta_data_section () } *)
+(* | [ "EndFamily" ] -> { inherits_all_remained(); close_current_inh_judgement() } *)
+(* | [ "EndFieldClaim" ] -> { close_claim_and_collect_claim_goal_info () } *)
+(* | [ "EndFTheorem" ]   -> { close_ftheorem () } *)
+END
+
+
+VERNAC COMMAND EXTEND FamilyPolyProof CLASSIFIED BY { _in_proof_mode } STATE open_proof
+| ["FProof"] -> {
+  match peek_scope () with 
+  | Some (OpenedFieldClaim, _, _) -> start_proving_claim_goal_info () 
+  | Some (FInduction, _, _) -> start_proving_ftheorem () 
+  | _ -> cerror ~einfo:("Not Supposed to use FProof"^__LOC__) ()
+}
+(* | [ "StartProof" ] -> { 
+  assert_in_scope OpenedFieldClaim; start_proving_claim_goal_info () 
+}
+| [ "StartFProof" ] -> { 
+  assert_in_scope FInduction; start_proving_ftheorem () 
+} *)
+| [ "StartFProofAll" ] -> { assert_in_scope FInduction; start_proving_ftheorem ~split:false () }
+(* | [ "TestProof" ident(fname) ":" llconstr_ip(eT) "by" "{" tactic(t) "}" ] -> { test_proof fname eT t }   *)
+
+(* Currently makes it easier, later we will support more stuff *)
+(* | [ "FieldQed" ] -> { close_field_proof_mode Vernacexpr.Opaque } *)
+END
+
+
+VERNAC COMMAND EXTEND FamilyPolyExtension CLASSIFIED AS SIDEFF
+| [ "Family" ident(fname) "extends" ident(bname)]  -> { 
+    assert_in_empty_scope ();
+    open_new_inhjudgement ~bname:(Some bname) fname;
+    push_scope (OpenedFamily, fname, (fun _ -> (inherits_all_remained(); close_current_inh_judgement())))
+    }
+
+(* Legacy as well, we do the inference *)
+(* | [ "Extend" "Family" ident(fname) ]             -> { 
+    assert_in_scope OpenedFamily;
+    extend_new_nested_inhjudgement fname;
+    push_scope (OpenedFamily, fname, (fun _ -> (inherits_all_remained(); close_current_inh_judgement())))
+    } *)
+
+| [ "Family" ident(fname) ] -> {
+  begin match infer_fname_new_or_extend fname with 
+  | `New -> open_new_inhjudgement fname
+  | `Extend ->  assert_in_scope OpenedFamily; extend_new_nested_inhjudgement fname
+  end;
+  push_scope (OpenedFamily, fname, (fun _ -> (inherits_all_remained(); close_current_inh_judgement()))); 
+  }
+
+
+(* Following Deprecated *)
+(* | [ "Override" "Family" ident(fname) ]             -> { override_nested_inhjudgement fname } *)
+| [ "Override" "Field" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e) ]   -> { 
+    assert_in_scope OpenedFamily;
+    override_current_field fname e eT }
+
+| [ "Override" "pins" "{" list1ident(def_depend) "}" "Field" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e) ]   -> 
+  {   assert_in_scope OpenedFamily;
+      override_current_field fname e ~new_dependency:(Some def_depend) eT }
+| [ "Override" "pins" "{" list1ident(def_depend) "}" "FDefinition" ident(fname) ":" llconstr_ip(eT) ":=" llconstr_ip(e) ]   -> 
+  {   assert_in_scope OpenedFamily;
+      override_current_field fname e ~new_dependency:(Some def_depend) eT }
+| [ "Override" "pins" "{" list1ident(def_depend) "}" "Field" ident(fname) ":" llconstr_ip(eT)  ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    (* this is the gathering of Overridable FieldClaim Stuff *)
+    let ov_dependencies = Some (fst @@ overridable_names_analyze_to_paths def_depend) in 
+    let modname, params = override_open_claim_goal_info_prepare ~ov_dependencies tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+| [ "Override" "Field" ident(fname) ":" llconstr_ip(eT)  ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    let def_depend = [] in 
+    (* this is the gathering of Overridable FieldClaim Stuff *)
+    let ov_dependencies = Some (fst @@ overridable_names_analyze_to_paths def_depend) in 
+    let modname, params = override_open_claim_goal_info_prepare ~ov_dependencies tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+| [ "Override" "pins" "{" list1ident(def_depend) "}" "FLemma" ident(fname) ":" llconstr_ip(eT)  ] -> {
+    assert_in_scope OpenedFamily;
+    let tbinders = [(fname, eT)] in 
+    (* this is the gathering of Overridable FieldClaim Stuff *)
+    let ov_dependencies = Some (fst @@ overridable_names_analyze_to_paths def_depend) in 
+    let modname, params = override_open_claim_goal_info_prepare ~ov_dependencies tbinders in
+    open_new_module (modname.v) params; 
+    push_scope (OpenedFieldClaim, fname, close_claim_and_collect_claim_goal_info)
+  }
+
+(* Now Override can only apply to overridable term
+*)
+
+
+(* Inductive type for family poly *)
+(* | [ "FInductive" mutind_defs(inddefs) ] -> {   assert_in_scope OpenedFamily; add_ind_defs inddefs }
+| [ "Extend" "FInductive" mutind_defs(inddefs) ] -> {   
+    assert_in_scope OpenedFamily; extend_ind_type inddefs } *)
+| [ "FInductive" mutind_defs(inddefs) ] -> {
+  assert_in_scope OpenedFamily;
+  let fname = List.hd @@ extract_type_ident [inddefs] in    
+  (match infer_fname_new_or_extend fname with 
+  | `New -> add_ind_defs inddefs
+  | `Extend -> extend_ind_type inddefs);
+    (* TODO: fail to make the following work *)
+    (* post_generate_prec_and_rec2d_after_inductive_def fname *)
+  }
+
+| [ "Inherit" "Field" ident(fname) ]              -> {   assert_in_scope OpenedFamily; add_inherited_fields_until_and_including fname }
+| [ "Inherit" "Until" "Field" ident(fname) ]     -> {   assert_in_scope OpenedFamily; add_inherited_fields_until_not_including fname }
+
+| [ "Family" ident(newfname) "extends" ident(basename) "using" ident(inhname1) "using" ident(inhname2)]
+-> {
+      (* Legacy inh_mixin *)
+      inh_mixin newfname basename inhname1 inhname2
+    }
+
+| [ "Family" ident(newfname) "extends" ident(basename) "using" ident(inhname1) "using" ident(inhname2) "Begin"]
+-> {
+      start_completing_mixin newfname basename inhname1 inhname2;
+      push_scope (OpenedFamily, newfname, (fun _ -> (inherits_all_remained(); close_current_inh_judgement())))
+      (* () *)
+    }
+END
+
+
+TACTIC EXTEND frec_eval
+| [ "frec_eval_onestep" constr(recursor) ] ->
+  { do_frec_eval recursor }
+END
+
+
+(* A Hack to support finjection *)
+TACTIC EXTEND finject
+| [ "finjection_on" constr(cstrctr) ident(h) ] ->
+  { 
+    finjection_on cstrctr h
+  }
+END
+
+
+(* A Hack to support fdiscriminate *)
+TACTIC EXTEND fdiscri
+| [ "fdiscriminate_by" ident(h) constr(typ) ] ->
+  { 
+    fdiscriminate_by h typ
+  }
+END

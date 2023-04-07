@@ -1,0 +1,14 @@
+(library
+ (name fampoly_plugin)
+ (flags :standard -warn-error -3 -rectypes)
+ (libraries coq-core.plugins.ltac)
+ (public_name fampoly_plugin.plugin)     ; This makes the plugin
+                                   ; installable; recommended, must
+                                   ; match opam package name
+ )
+
+(coq.pp (modules fampoly))
+
+(env
+  (dev
+    (flags (:standard -w -27))))

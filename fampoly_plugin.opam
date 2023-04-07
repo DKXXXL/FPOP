@@ -1,0 +1,19 @@
+synopsis:     "Family Poly Plugin"
+description:  "Family Poly Plugin"
+name:         "fampoly-plugin"
+opam-version: "2.0"
+maintainer:   "ende.jin@uwaterloo.ca"
+authors:      "Ende Jin"
+homepage:     "https://github.com/DKXXXL/FamilyPoly-Plugin"
+bug-reports:  "https://github.com/DKXXXL/FamilyPoly-Plugin"
+dev-repo:     "git+https://github.com/DKXXXL/FamilyPoly-Plugin"
+license:      "GPL 3"
+doc:          ""
+
+depends: [
+  "ocaml"         { >= "4.13.1"            }
+  "coq"           { >= "8.15.0" & < "8.16" }
+  "dune"          { >= "2.4.0"             }
+]
+
+build: [ "dune" "build" "-p" name "-j" jobs ]
