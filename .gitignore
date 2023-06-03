@@ -1,0 +1,7 @@
+_build/
+testoutput/
+*.aux
+*.glob
+*.vos
+.lia.*
+output*.txt

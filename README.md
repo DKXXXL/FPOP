@@ -52,7 +52,7 @@ Currently we cannot turn off the debug dump.
 # Known Bugs
 1. The debug dump will be generated during the usage of our plugin. We currently doesn't support turning it off
 2. Families have to be wrapped inside one module. (i.e. There has to be a very top level module, then we can define family inside this module)
-
+3. Not working well with VSCoq 0.3.8's "Interpret to End" Command. Because this command is actually interpreting the proof script in a parallel way. Current implementation breaks some of this assumption
 # Known Bugs on MacOS
 1. When running `coqc` on two `Analysis_showcase`, it might took around 3 times the expected time. It won't immediately terminate after the final command `Print Analysis_showcase.LangCP`.
 2. VSCoq on MacOS is not working well with our plugin
